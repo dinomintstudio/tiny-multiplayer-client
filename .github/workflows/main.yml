@@ -35,8 +35,4 @@ jobs:
       - name: ci
         run: |
           npm run ci
-      - name: deploy
-        if: github.ref == 'refs/heads/master' && success()
-        run: |
-          netlify deploy --dir=dist --prod --site=${{ secrets.NETLIFY_SITE_ID }} --auth=${{ secrets.NETLIFY_API_TOKEN }}
 
