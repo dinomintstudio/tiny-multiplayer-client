@@ -4,7 +4,7 @@
     "version": "0.1.0",
     "description": "Multiplayer POC using WebRTC",
     "scripts": {
-        "start": "vite",
+        "start": "vite --host 127.0.0.1",
         "dev": "vite",
         "build": "tsc --noEmit && vite build",
         "serve": "vite preview",

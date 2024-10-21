@@ -3,3 +3,12 @@ body {
     background-color: #111111;
     color: white;
 }
+
+table, th, td {
+    border: 1px solid white;
+    border-collapse: collapse;
+}
+
+td, th {
+    padding: 2px 4px;
+}
