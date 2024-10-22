@@ -1,5 +1,5 @@
 import { type Component, For, createSignal, onMount } from 'solid-js'
-import { iceUrl, wsUrl } from '../../constant'
+import { iceServers, wsUrl } from '../../constant'
 import './App.module.scss'
 
 export type Peer = {
@@ -93,7 +93,7 @@ export const App: Component = () => {
         const existing = peerConnections.get(peer.id)
         if (existing) return existing
 
-        const rtcConn = new RTCPeerConnection({ iceServers: [{ urls: iceUrl, username: 'turn', credential: 'turn' }] })
+        const rtcConn = new RTCPeerConnection({ iceServers: JSON.parse(iceServers) })
         const conn: PeerConnection = { peer, rtcConn }
         peerConnections.set(peer.id, conn)
 

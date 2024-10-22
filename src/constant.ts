@@ -1,6 +1,6 @@
-export const iceUrl: string = import.meta.env.ICE_URL
-if (!iceUrl) {
-    console.error('ICE_URL not set')
+export const iceServers: string = import.meta.env.ICE_SERVERS
+if (!iceServers) {
+    console.error('ICE_SERVERS not set')
 }
 
 export const wsUrl: string = import.meta.env.WS_URL
