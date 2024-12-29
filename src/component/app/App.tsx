@@ -1,173 +1,169 @@
+import { Instance } from 'simple-peer'
 import { type Component, For, createSignal, onMount } from 'solid-js'
-import { iceServers, wsUrl } from '../../constant'
+import { arr2hex, bin2hex, hash, hex2bin, randomBytes } from 'uint8-util'
+import { wsUrl } from '../../constant'
+import { Peer } from '../../peer'
 import './App.module.scss'
 
-export type Peer = {
+export type PeerInfo = {
     id: string
     connected: boolean
 }
 
-export type PeerConnection = {
-    peer: Peer
-    rtcConn: RTCPeerConnection
-    dataChannel?: RTCDataChannel
-}
 export type Message = {
-    from: Peer
+    from: PeerInfo
     text: string
 }
 
 export const App: Component = () => {
-    const [me, setMe] = createSignal<Peer>()
-    const [peers, setPeers] = createSignal<Peer[]>([])
+    const [me, setMe] = createSignal<PeerInfo>()
+    const [peers, setPeers] = createSignal<PeerInfo[]>([])
     const [messages, setMessages] = createSignal<Message[]>([])
-    const peerConnections = new Map<string, PeerConnection>()
+    const peerConnections = new Map<string, Instance>()
 
     const ws = new WebSocket(wsUrl)
+    const appId = 'tiny-multiplayer'
+    const peerId = arr2hex(randomBytes(20))
+    setMe({ id: peerId, connected: false })
+    setPeers([me()!])
+
+    let peer: Instance | undefined
+    let iPeerId: string | undefined
+    let iOfferId: string | undefined
 
     onMount(async () => {
+        await new Promise(done => ws.addEventListener('open', done))
         ws.addEventListener('message', async m => {
             const data = JSON.parse(m.data)
-            console.debug('ws message', data)
-            switch (data.type) {
-                case 'you': {
-                    setMe(data.peer)
-                    break
-                }
-                case 'peer-connected': {
-                    setPeers([...peers(), data.peer])
-                    break
-                }
-                case 'peer-disconnected': {
-                    setPeers(peers().filter(p => p.id !== data.peer.id))
-                    break
-                }
-                case 'new-ice-candidate': {
-                    const remoteId = data.name
-                    const remotePeerConn = peerConnections.get(remoteId)
-                    if (!remotePeerConn) {
-                        console.warn('no connection')
-                        console.debug(peerConnections, remoteId)
-                        return
-                    }
-                    const candidate = new RTCIceCandidate(data.candidate)
-                    remotePeerConn.rtcConn.addIceCandidate(candidate)
-                    break
-                }
-                case 'data-offer': {
-                    const remoteId = data.name
-                    const conn = createPeerConnection({ id: remoteId, connected: false })
-                    const rtcConn = conn.rtcConn
 
-                    await rtcConn.setRemoteDescription(new RTCSessionDescription(data.sdp))
-                    const answer = await rtcConn.createAnswer()
-                    await rtcConn.setLocalDescription(answer)
-
-                    ws.send(
-                        JSON.stringify({
-                            name: me()!.id,
-                            target: remoteId,
-                            type: 'data-answer',
-                            sdp: rtcConn.localDescription
-                        })
-                    )
+            switch (data.action) {
+                case 'announce': {
+                    if (data.peer_id) {
+                        if (!peers().find(p => p.id === data.peer_id)) {
+                            console.debug('new peer', data)
+                            iPeerId = bin2hex(data.peer_id)
+                            setPeers([...peers(), { id: iPeerId, connected: false }])
+                        }
+                        if (data.offer) {
+                            console.debug('offer', data)
+                            iOfferId = data.offer_id
+                            peer = await createPeer(false)
+                            peer.signal(data.offer)
+                            peerConnections.set(iPeerId!, peer)
+                        }
+                        if (data.answer) {
+                            console.debug('answer', data)
+                            if (!peer) throw Error('no peer')
+                            peer.signal(data.answer)
+                            peerConnections.set(iPeerId!, peer)
+                        }
+                    }
                     break
                 }
-                case 'data-answer': {
-                    const remoteId = data.name
-                    const remotePeerConn = peerConnections.get(remoteId)
-                    if (!remotePeerConn) {
-                        console.warn('no connection')
-                        return
-                    }
-                    const sessionDesc = new RTCSessionDescription(data.sdp)
-                    remotePeerConn.rtcConn.setRemoteDescription(sessionDesc)
-                    break
+                default: {
+                    console.warn('unknown action type')
                 }
             }
         })
-        await new Promise(done => ws.addEventListener('open', done))
+        announce()
     })
 
-    const createPeerConnection = (peer: Peer) => {
-        const existing = peerConnections.get(peer.id)
-        if (existing) return existing
-
-        const rtcConn = new RTCPeerConnection({ iceServers: JSON.parse(iceServers) })
-        const conn: PeerConnection = { peer, rtcConn }
-        peerConnections.set(peer.id, conn)
-
-        const dataChannel = rtcConn.createDataChannel('data')
-        dataChannel.addEventListener('open', () => console.debug('datachannel open'))
-        dataChannel.addEventListener('close', () => console.debug('datachannel close'))
-        dataChannel.addEventListener('message', e => {
-            console.debug('datachannel message', e.data)
-            const msg = { from: peer, text: e.data as string }
-            setMessages([...messages(), msg])
-        })
-
-        rtcConn.addEventListener('datachannel', e => {
-            console.debug('datachannel')
-            conn.dataChannel = e.channel
-        })
-
-        rtcConn.addEventListener('icecandidate', e => {
-            console.debug('icecandidate', e.candidate?.candidate)
-            if (e.candidate) {
-                ws.send(
-                    JSON.stringify({
-                        name: me()!.id,
-                        type: 'new-ice-candidate',
-                        target: peer.id,
-                        candidate: e.candidate
-                    })
-                )
-            }
-        })
-        rtcConn.addEventListener('negotiationneeded', e => {
-            rtcConn
-                .createOffer()
-                .then(offer => rtcConn.setLocalDescription(offer))
-                .then(() => {
-                    ws.send(
-                        JSON.stringify({
-                            name: me()!.id,
-                            target: peer.id,
-                            type: 'data-offer',
-                            sdp: rtcConn.localDescription
-                        })
-                    )
-                })
-                .catch(window.reportError)
-        })
-        rtcConn.addEventListener('iceconnectionstatechange', e =>
-            console.debug(e.type, (e.target as RTCPeerConnection).iceConnectionState)
+    const announce = async () => {
+        const infoHash = (await hash(appId, 'hex')).toString()
+        ws.send(
+            JSON.stringify({
+                action: 'announce',
+                info_hash: hex2bin(infoHash),
+                peer_id: hex2bin(peerId),
+                numwant: 10,
+                offers: [{ offer: await new RTCPeerConnection().createOffer(), offer_id: arr2hex(randomBytes(20)) }]
+            })
         )
-        rtcConn.addEventListener('icegatheringstatechange', e =>
-            console.debug('icegatheringstatechange', (e.target as RTCPeerConnection).iceGatheringState)
-        )
-        rtcConn.addEventListener('connectionstatechange', e => {
-            console.debug('connectionstatechange', (e.target as RTCPeerConnection).connectionState)
-            setPeers(
-                peers().map(p => (p.id === peer.id ? { ...p, connected: rtcConn.connectionState === 'connected' } : p))
-            )
-        })
-        rtcConn.addEventListener('signalingstatechange', e =>
-            console.debug('signalingstatechange', (e.target as RTCPeerConnection).signalingState)
-        )
-
-        return conn
     }
 
-    const sendData = (peer: Peer) => {
-        const conn = peerConnections.get(peer.id)!
+    const createPeer = async (initiator: boolean) => {
+        const infoHash = (await hash(appId, 'hex')).toString()
+        const peer = Peer({ initiator, trickle: false })
+        if (initiator) {
+            peer.on('signal', async signal => {
+                if (signal.type === 'offer') {
+                    ws.send(
+                        JSON.stringify({
+                            action: 'announce',
+                            info_hash: hex2bin(infoHash),
+                            peer_id: hex2bin(peerId),
+                            numwant: 10,
+                            offers: [{ offer: signal, offer_id: arr2hex(randomBytes(20)) }]
+                        })
+                    )
+                }
+            })
+        } else {
+            peer.on('signal', async signal => {
+                if (signal.type === 'answer') {
+                    ws.send(
+                        JSON.stringify({
+                            action: 'announce',
+                            info_hash: hex2bin(infoHash),
+                            peer_id: hex2bin(peerId),
+                            to_peer_id: hex2bin(iPeerId!),
+                            answer: signal,
+                            offer_id: iOfferId!
+                        })
+                    )
+                }
+            })
+        }
+        peer.on('data', (data: Uint8Array) => {
+            console.log('DATA', data.toString())
+        })
+        peer.on('connect', () => {
+            console.debug('CONNECTED')
+            setPeers(
+                peers().map(p => {
+                    if (p.id === iPeerId) {
+                        p.connected = true
+                    }
+                    return { ...p }
+                })
+            )
+            console.log('sending', peer)
+            peer.send('Hello!')
+        })
+        const disconnect = (e: string | Error) => {
+            console.debug(e)
+            setPeers(
+                peers().map(p => {
+                    if (p.id === iPeerId) {
+                        p.connected = false
+                    }
+                    return { ...p }
+                })
+            )
+            peerConnections.delete(peerId)
+        }
+        peer.on('error', e => disconnect(e))
+        peer.on('close', () => disconnect('close'))
+        return peer
+    }
+
+    const sendData = (peer: PeerInfo) => {
+        const inst = peerConnections.get(peer.id)!
         const msg = `hello from ${me()!.id}!`
         console.debug(`sending to #${peer.id}`, msg)
-        conn.dataChannel?.send(msg)
+        inst?.send(msg)
     }
 
     return (
         <div class="App">
+            <button
+                type="button"
+                onClick={async () => {
+                    peer = await createPeer(true)
+                }}
+            >
+                offer
+            </button>
             <h2>Peers</h2>
             <table>
                 <thead>
@@ -182,16 +178,7 @@ export const App: Component = () => {
                             <tr>
                                 <td>{peer.id}</td>
                                 <td>
-                                    <button
-                                        type="button"
-                                        disabled={!(me() && peer.id !== me()!.id)}
-                                        onClick={() => createPeerConnection(peer)}
-                                    >
-                                        connect
-                                    </button>
-                                </td>
-                                <td>
-                                    <input type="checkbox" checked={peer.connected} />
+                                    <input type="checkbox" checked={peer.connected === true} />
                                 </td>
                                 <td>
                                     <button type="button" disabled={!peer.connected} onClick={() => sendData(peer)}>

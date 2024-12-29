@@ -25,10 +25,13 @@
         "tslib": "2.6.0",
         "typescript": "5.5.3",
         "vite": "4.3.9",
-        "vite-plugin-solid": "2.7.0"
+        "vite-plugin-solid": "2.7.0",
+        "@types/simple-peer": "^9.11.8"
     },
     "dependencies": {
-        "solid-js": "1.7.6"
+        "simple-peer": "^9.11.1",
+        "solid-js": "1.7.6",
+        "uint8-util": "^2.2.5"
     },
     "packageManager": "pnpm@9.4.0"
 }
