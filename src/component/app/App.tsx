@@ -1,8 +1,6 @@
-import { Instance } from 'simple-peer'
 import { type Component, For, Match, Switch, createSignal, onMount } from 'solid-js'
-import { arr2hex, bin2hex, hash, hex2bin, randomBytes } from 'uint8-util'
 import { wsUrl } from '../../constant'
-import { Peer } from '../../peer'
+import { Connection, Swarm } from '../../swarm'
 import './App.module.scss'
 
 export type PeerInfo = {
@@ -19,142 +17,50 @@ export const App: Component = () => {
     const [me, setMe] = createSignal<PeerInfo>()
     const [peers, setPeers] = createSignal<PeerInfo[]>([])
     const [messages, setMessages] = createSignal<Message[]>([])
-    const peerConnections = new Map<string, Instance>()
 
-    const ws = new WebSocket(wsUrl)
     const appId = 'tiny-multiplayer'
-    const peerId = arr2hex(randomBytes(20))
-    setMe({ id: peerId, connected: false })
-    setPeers([me()!])
 
-    let peer: Instance | undefined
-    let iPeerId: string | undefined
-    let iOfferId: string | undefined
-
-    onMount(async () => {
-        await new Promise(done => ws.addEventListener('open', done))
-        ws.addEventListener('message', async m => {
-            const data = JSON.parse(m.data)
-
-            switch (data.action) {
-                case 'announce': {
-                    if (data.peer_id) {
-                        iPeerId = bin2hex(data.peer_id)
-                        if (!peers().find(p => p.id === iPeerId)) {
-                            console.debug('new peer', iPeerId)
-                            setPeers([...peers(), { id: iPeerId, connected: false }])
-                        }
-                        if (data.offer) {
-                            console.debug('offer', data)
-                            iOfferId = data.offer_id
-                            peer = await offer(false)
-                            peer.signal(data.offer)
-                            peerConnections.set(iPeerId!, peer)
-                        }
-                        if (data.answer) {
-                            console.debug('answer', data)
-                            if (!peer) throw Error('no peer')
-                            peer.signal(data.answer)
-                            peerConnections.set(iPeerId!, peer)
-                        }
-                    }
-                    break
-                }
-            }
-        })
-        announce()
+    const swarm = new Swarm({
+        trackerUrl: wsUrl,
+        appId
     })
-
-    const announce = async () => {
-        const infoHash = (await hash(appId, 'hex')).toString()
-        ws.send(
-            JSON.stringify({
-                action: 'announce',
-                info_hash: hex2bin(infoHash),
-                peer_id: hex2bin(peerId),
-                numwant: 10,
-                offers: [{ offer: await new RTCPeerConnection().createOffer(), offer_id: arr2hex(randomBytes(20)) }]
+    setMe({ id: swarm.myId, connected: false })
+    setPeers([me()!])
+    swarm.on('new-peer', conn => setPeers([...peers(), { id: conn.peerId, connected: false }]))
+    swarm.on('connect', conn => {
+        console.warn('connect', conn)
+        setPeers(
+            peers().map(p => {
+                if (p.id === conn.peerId) {
+                    p.connected = true
+                }
+                return { ...p }
+            })
+        )
+    })
+    const disconnect = (conn: Connection, e?: Error) => {
+        console.debug(e)
+        setPeers(
+            peers().map(p => {
+                if (p.id === conn.peerId) {
+                    p.connected = false
+                }
+                return { ...p }
             })
         )
     }
+    swarm.on('error', (e, conn) => disconnect(conn, e))
+    swarm.on('close', conn => disconnect(conn))
+    swarm.on('message', (msg, conn) => setMessages([...messages(), { from: conn.peerId, text: msg }]))
 
-    const offer = async (initiator: boolean) => {
-        const infoHash = (await hash(appId, 'hex')).toString()
-        const peer = Peer({ initiator, trickle: false })
-        if (initiator) {
-            peer.on('signal', async signal => {
-                if (signal.type === 'offer') {
-                    ws.send(
-                        JSON.stringify({
-                            action: 'announce',
-                            info_hash: hex2bin(infoHash),
-                            peer_id: hex2bin(peerId),
-                            numwant: 10,
-                            offers: [{ offer: signal, offer_id: arr2hex(randomBytes(20)) }]
-                        })
-                    )
-                }
-            })
-        } else {
-            peer.on('signal', async signal => {
-                if (signal.type === 'answer') {
-                    ws.send(
-                        JSON.stringify({
-                            action: 'announce',
-                            info_hash: hex2bin(infoHash),
-                            peer_id: hex2bin(peerId),
-                            to_peer_id: hex2bin(iPeerId!),
-                            answer: signal,
-                            offer_id: iOfferId!
-                        })
-                    )
-                }
-            })
-        }
-        peer.on('data', (data: Uint8Array) => {
-            setMessages([...messages(), { from: iPeerId!, text: data.toString() }])
-        })
-        peer.on('connect', () => {
-            setPeers(
-                peers().map(p => {
-                    if (p.id === iPeerId) {
-                        p.connected = true
-                    }
-                    return { ...p }
-                })
-            )
-        })
-        const disconnect = (e: string | Error) => {
-            console.debug(e)
-            setPeers(
-                peers().map(p => {
-                    if (p.id === iPeerId) {
-                        p.connected = false
-                    }
-                    return { ...p }
-                })
-            )
-            peerConnections.delete(peerId)
-        }
-        peer.on('error', e => disconnect(e))
-        peer.on('close', () => disconnect('close'))
-        return peer
-    }
-
-    const sendData = (peer: PeerInfo) => {
-        const inst = peerConnections.get(peer.id)
-        const msg = 'hello!'
-        inst?.send(msg)
-    }
+    onMount(async () => {
+        await swarm.connect()
+        await swarm.announce()
+    })
 
     return (
         <div class="App">
-            <button
-                type="button"
-                onClick={async () => {
-                    peer = await offer(true)
-                }}
-            >
+            <button type="button" onClick={() => swarm.offer()}>
                 offer
             </button>
             <h2>Peers</h2>
@@ -179,7 +85,11 @@ export const App: Component = () => {
                                     </Switch>
                                 </td>
                                 <td>
-                                    <button type="button" disabled={!peer.connected} onClick={() => sendData(peer)}>
+                                    <button
+                                        type="button"
+                                        disabled={!peer.connected}
+                                        onClick={() => swarm.send(peer.id, 'hello!')}
+                                    >
                                         send
                                     </button>
                                 </td>

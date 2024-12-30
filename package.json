@@ -16,19 +16,22 @@
     "author": "ivanjermakov",
     "license": "MIT",
     "devDependencies": {
+        "@types/events": "^3.0.3",
         "@types/jasmine": "4.3.5",
         "@types/node": "18.16.20",
+        "@types/simple-peer": "^9.11.8",
         "bun": "1.0.23",
         "cross-env": "7.0.3",
         "sass": "1.63.6",
         "solid-devtools": "0.27.3",
         "tslib": "2.6.0",
+        "typed-emitter": "^2.1.0",
         "typescript": "5.5.3",
         "vite": "4.3.9",
-        "vite-plugin-solid": "2.7.0",
-        "@types/simple-peer": "^9.11.8"
+        "vite-plugin-solid": "2.7.0"
     },
     "dependencies": {
+        "events": "^3.3.0",
         "simple-peer": "^9.11.1",
         "solid-js": "1.7.6",
         "uint8-util": "^2.2.5"
