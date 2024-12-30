@@ -1,5 +1,5 @@
 import { Instance } from 'simple-peer'
-import { type Component, For, createSignal, onMount } from 'solid-js'
+import { type Component, For, Match, Switch, createSignal, onMount } from 'solid-js'
 import { arr2hex, bin2hex, hash, hex2bin, randomBytes } from 'uint8-util'
 import { wsUrl } from '../../constant'
 import { Peer } from '../../peer'
@@ -11,7 +11,7 @@ export type PeerInfo = {
 }
 
 export type Message = {
-    from: PeerInfo
+    from: string
     text: string
 }
 
@@ -39,15 +39,15 @@ export const App: Component = () => {
             switch (data.action) {
                 case 'announce': {
                     if (data.peer_id) {
-                        if (!peers().find(p => p.id === data.peer_id)) {
-                            console.debug('new peer', data)
-                            iPeerId = bin2hex(data.peer_id)
+                        iPeerId = bin2hex(data.peer_id)
+                        if (!peers().find(p => p.id === iPeerId)) {
+                            console.debug('new peer', iPeerId)
                             setPeers([...peers(), { id: iPeerId, connected: false }])
                         }
                         if (data.offer) {
                             console.debug('offer', data)
                             iOfferId = data.offer_id
-                            peer = await createPeer(false)
+                            peer = await offer(false)
                             peer.signal(data.offer)
                             peerConnections.set(iPeerId!, peer)
                         }
@@ -59,9 +59,6 @@ export const App: Component = () => {
                         }
                     }
                     break
-                }
-                default: {
-                    console.warn('unknown action type')
                 }
             }
         })
@@ -81,7 +78,7 @@ export const App: Component = () => {
         )
     }
 
-    const createPeer = async (initiator: boolean) => {
+    const offer = async (initiator: boolean) => {
         const infoHash = (await hash(appId, 'hex')).toString()
         const peer = Peer({ initiator, trickle: false })
         if (initiator) {
@@ -115,10 +112,9 @@ export const App: Component = () => {
             })
         }
         peer.on('data', (data: Uint8Array) => {
-            console.log('DATA', data.toString())
+            setMessages([...messages(), { from: iPeerId!, text: data.toString() }])
         })
         peer.on('connect', () => {
-            console.debug('CONNECTED')
             setPeers(
                 peers().map(p => {
                     if (p.id === iPeerId) {
@@ -127,8 +123,6 @@ export const App: Component = () => {
                     return { ...p }
                 })
             )
-            console.log('sending', peer)
-            peer.send('Hello!')
         })
         const disconnect = (e: string | Error) => {
             console.debug(e)
@@ -148,9 +142,8 @@ export const App: Component = () => {
     }
 
     const sendData = (peer: PeerInfo) => {
-        const inst = peerConnections.get(peer.id)!
-        const msg = `hello from ${me()!.id}!`
-        console.debug(`sending to #${peer.id}`, msg)
+        const inst = peerConnections.get(peer.id)
+        const msg = 'hello!'
         inst?.send(msg)
     }
 
@@ -159,7 +152,7 @@ export const App: Component = () => {
             <button
                 type="button"
                 onClick={async () => {
-                    peer = await createPeer(true)
+                    peer = await offer(true)
                 }}
             >
                 offer
@@ -178,7 +171,12 @@ export const App: Component = () => {
                             <tr>
                                 <td>{peer.id}</td>
                                 <td>
-                                    <input type="checkbox" checked={peer.connected === true} />
+                                    <Switch>
+                                        <Match when={me()!.id === peer.id}>me</Match>
+                                        <Match when={true}>
+                                            <input type="checkbox" checked={peer.connected === true} />
+                                        </Match>
+                                    </Switch>
                                 </td>
                                 <td>
                                     <button type="button" disabled={!peer.connected} onClick={() => sendData(peer)}>
@@ -195,7 +193,7 @@ export const App: Component = () => {
                 <For each={messages()}>
                     {message => (
                         <tr>
-                            <td>{message.from.id}:</td>
+                            <td>{message.from}:</td>
                             <td>{message.text}</td>
                         </tr>
                     )}
