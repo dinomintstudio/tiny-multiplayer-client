@@ -1,5 +1,5 @@
 import EventEmitter from 'events'
-import { Instance } from 'simple-peer'
+import { Instance, SignalData } from 'simple-peer'
 import TypedEmitter from 'typed-emitter'
 import { arr2hex, bin2hex, hash, hex2bin, randomBytes } from 'uint8-util'
 import { Peer } from './peer'
@@ -9,6 +9,7 @@ export type SwarmOptions = {
     appId: string
     iceUrls?: string[]
     id?: string
+    broadcastWidth?: number
 }
 
 export type Connection = {
@@ -26,10 +27,11 @@ export type SwarmEvents = {
 }
 
 export class Swarm extends (EventEmitter as new () => TypedEmitter<SwarmEvents>) {
-    ws?: WebSocket
     connections: { [id: string]: Connection } = {}
     offers: { [offerId: string]: Instance } = {}
     myId: string
+    infoHash?: string
+    ws?: WebSocket
 
     constructor(public opts: SwarmOptions) {
         super()
@@ -37,11 +39,17 @@ export class Swarm extends (EventEmitter as new () => TypedEmitter<SwarmEvents>)
     }
 
     async connect(): Promise<void> {
-        this.ws = new WebSocket(this.opts.trackerUrl)
+        this.infoHash = (await hash(this.opts.appId, 'hex')).toString()
+        const reconnect = async () => {
+            const ws = new WebSocket(this.opts.trackerUrl)
+            await new Promise(done => ws.addEventListener('open', done))
+            return ws
+        }
+        this.ws = await reconnect()
         this.ws.addEventListener('message', async m => {
             const data = JSON.parse(m.data)
             if (data.action !== 'announce') return
-            const offerId = data.offer_id
+            const offerId = data.offer_id ? bin2hex(data.offer_id) : undefined
             if (data.peer_id && offerId) {
                 const peerId = bin2hex(data.peer_id)
 
@@ -64,7 +72,6 @@ export class Swarm extends (EventEmitter as new () => TypedEmitter<SwarmEvents>)
                 }
                 if (data.answer) {
                     console.debug('answer', data)
-                    console.log(this.offers, offerId)
                     const instance = this.offers[offerId]
                     if (!instance) throw Error('no instance')
                     instance.signal(data.answer)
@@ -78,55 +85,61 @@ export class Swarm extends (EventEmitter as new () => TypedEmitter<SwarmEvents>)
                 console.error('unknown message', data)
             }
         })
-        await new Promise(done => this.ws!.addEventListener('open', done))
-    }
-
-    async announce(): Promise<void> {
-        const infoHash = (await hash(this.opts.appId, 'hex')).toString()
-        const offer = await new RTCPeerConnection().createOffer()
-        this.ws!.send(
-            JSON.stringify({
-                action: 'announce',
-                info_hash: hex2bin(infoHash),
-                peer_id: hex2bin(this.myId),
-                numwant: 10,
-                offers: [{ offer, offer_id: arr2hex(randomBytes(10)) }]
-            })
-        )
+        this.ws.addEventListener('close', async e => {
+            console.debug(e)
+            this.ws = await reconnect()
+        })
+        this.ws.addEventListener('error', console.error)
     }
 
     async offer(): Promise<void> {
         await this.createPeer()
     }
 
+    createPeer_(initiator = false): Instance {
+        const peer = Peer({ initiator, trickle: false })
+        const findConnection = () => Object.values(this.connections).find(c => c.instance === peer)!
+        peer.on('data', (data: Uint8Array) => this.emit('message', data.toString(), findConnection()))
+        peer.on('connect', () => this.emit('connect', findConnection()))
+        peer.on('error', e => this.emit('error', e, findConnection()))
+        peer.on('close', () => this.emit('close', findConnection()))
+        return peer
+    }
+
     async createPeer(connection?: Connection): Promise<void> {
-        const infoHash = (await hash(this.opts.appId, 'hex')).toString()
-        const peer = Peer({ initiator: !connection, trickle: false })
         if (!connection) {
-            peer.on('signal', async signal => {
-                if (signal.type === 'offer') {
-                    const offer = { offer: signal, offer_id: arr2hex(randomBytes(10)) }
-                    this.offers[offer.offer_id] = peer
-                    console.log('create offer', this.offers, offer.offer_id)
-                    this.ws!.send(
-                        JSON.stringify({
-                            action: 'announce',
-                            info_hash: hex2bin(infoHash),
-                            peer_id: hex2bin(this.myId),
-                            numwant: 10,
-                            offers: [offer]
-                        })
-                    )
-                }
+            const width = this.opts.broadcastWidth ?? 10
+            const peers = new Array(width).fill(0).map(() => this.createPeer_(true))
+            const offerIds = new Array(width).fill(0).map(() => arr2hex(randomBytes(20)))
+            const offers = await Promise.all(
+                peers.map(
+                    (peer, i) =>
+                        new Promise<{ offer: SignalData; offer_id: string }>(done =>
+                            peer.on('signal', signal => done({ offer: signal, offer_id: hex2bin(offerIds[i]) }))
+                        )
+                )
+            )
+            peers.forEach((peer, i) => {
+                this.offers[offerIds[i]] = peer
             })
+            console.debug('create offers', this.offers)
+            this.ws!.send(
+                JSON.stringify({
+                    action: 'announce',
+                    info_hash: hex2bin(this.infoHash!),
+                    peer_id: hex2bin(this.myId),
+                    numwant: width,
+                    offers
+                })
+            )
         } else {
-            connection.instance = peer
-            peer.on('signal', async signal => {
+            connection.instance = this.createPeer_()
+            connection.instance.on('signal', signal => {
                 if (signal.type === 'answer') {
                     this.ws!.send(
                         JSON.stringify({
                             action: 'announce',
-                            info_hash: hex2bin(infoHash),
+                            info_hash: hex2bin(this.infoHash!),
                             peer_id: hex2bin(this.myId),
                             to_peer_id: hex2bin(connection.peerId),
                             answer: signal,
@@ -136,11 +149,6 @@ export class Swarm extends (EventEmitter as new () => TypedEmitter<SwarmEvents>)
                 }
             })
         }
-        const findConnection = () => Object.values(this.connections).find(c => c.instance === peer)!
-        peer.on('data', (data: Uint8Array) => this.emit('message', data.toString(), findConnection()))
-        peer.on('connect', () => this.emit('connect', findConnection()))
-        peer.on('error', e => this.emit('error', e, findConnection()))
-        peer.on('close', () => this.emit('close', findConnection()))
     }
 
     send(toId: string, message: string): void {

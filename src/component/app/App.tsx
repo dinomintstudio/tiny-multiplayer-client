@@ -22,7 +22,8 @@ export const App: Component = () => {
 
     const swarm = new Swarm({
         trackerUrl: wsUrl,
-        appId
+        appId,
+        broadcastWidth: 5
     })
     setMe({ id: swarm.myId, connected: false })
     setPeers([me()!])
@@ -55,7 +56,6 @@ export const App: Component = () => {
 
     onMount(async () => {
         await swarm.connect()
-        await swarm.announce()
     })
 
     return (
